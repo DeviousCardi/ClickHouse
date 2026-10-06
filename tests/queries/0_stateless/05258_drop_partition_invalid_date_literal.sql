@@ -142,6 +142,7 @@ SELECT 'tuple, nothing dropped', groupArray(x) FROM (SELECT x FROM t_tuple ORDER
 ALTER TABLE t_tuple DROP PARTITION ('2024-02-29', 1);
 SELECT 'tuple, valid literal', groupArray(x) FROM (SELECT x FROM t_tuple ORDER BY x);
 -- A cast between named tuples matches the elements by name, and so does the check.
+ALTER TABLE t_tuple DROP PARTITION (tupleElement(CAST(CAST(('2024-02-30', '2024-02-29'), 'Tuple(b String, a String)'), 'Tuple(a Date, b Date)'), 'a'), 1); -- { serverError INVALID_PARTITION_VALUE }
 ALTER TABLE t_tuple DROP PARTITION (tupleElement(CAST(CAST(('2024-02-29', '2024-03-01'), 'Tuple(b String, a String)'), 'Tuple(a Date, b Date)'), 'a'), 1);
 SELECT 'tuple, named tuple cast', groupArray(x) FROM (SELECT x FROM t_tuple ORDER BY x);
 DROP TABLE t_tuple;
