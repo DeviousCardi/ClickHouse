@@ -10471,7 +10471,8 @@ static bool hasSpelledFields(const Field & converted, const DataTypePtr & type, 
 /// as `25:00` over even in the `best_effort` mode. So the converted value is accepted only if it has the fields spelled
 /// in the string, or, for a spelling with no such fields such as a Unix timestamp, if it equals the value of the string
 /// read as a partition literal, which rejects a rolled-over value. Any other spelling is rejected.
-static void checkDateTimeConversionArgument(const Field & value, const Field & converted, const DataTypePtr & type)
+static void checkDateTimeConversionArgument(
+    const Field & value, const DataTypePtr & value_type, const Field & converted, const DataTypePtr & type)
 {
     if (value.getType() == Field::Types::String)
     {
@@ -10518,11 +10519,33 @@ static void checkDateTimeConversionArgument(const Field & value, const Field & c
     else if (value.getType() == Field::Types::Tuple && converted.getType() == Field::Types::Tuple)
     {
         const auto * tuple_type = typeid_cast<const DataTypeTuple *>(removeNullable(type).get());
+        const auto * value_tuple_type = typeid_cast<const DataTypeTuple *>(removeNullable(value_type).get());
         const auto & elements = value.safeGet<Tuple>();
         const auto & converted_elements = converted.safeGet<Tuple>();
-        if (tuple_type && tuple_type->getElements().size() == elements.size() && converted_elements.size() == elements.size())
-            for (size_t i = 0; i < elements.size(); ++i)
-                checkDateTimeConversionArgument(elements[i], converted_elements[i], tuple_type->getElement(i));
+        if (!tuple_type || !value_tuple_type || value_tuple_type->getElements().size() != elements.size()
+            || tuple_type->getElements().size() != converted_elements.size())
+            return;
+
+        /// Like `FunctionCast::createTupleWrapper`, a cast between named tuples with a common element name matches the
+        /// elements by name, and an element with no counterpart gets the default value; otherwise they are matched by
+        /// position.
+        bool match_by_name = false;
+        if (value_tuple_type->hasExplicitNames() && tuple_type->hasExplicitNames())
+            for (size_t i = 0; i < converted_elements.size() && !match_by_name; ++i)
+                match_by_name = value_tuple_type->tryGetPositionByName(tuple_type->getNameByPosition(i)).has_value();
+
+        for (size_t i = 0; i < converted_elements.size(); ++i)
+        {
+            std::optional<size_t> source = i;
+            if (match_by_name)
+                source = value_tuple_type->tryGetPositionByName(tuple_type->getNameByPosition(i));
+            else if (i >= elements.size())
+                source.reset();
+
+            if (source)
+                checkDateTimeConversionArgument(
+                    elements[*source], value_tuple_type->getElement(*source), converted_elements[i], tuple_type->getElement(i));
+        }
     }
 }
 
@@ -10545,9 +10568,9 @@ static void checkDateTimeConversionsInPartitionValue(const ASTPtr & ast, Context
         || (!isFunctionCast(function) && !is_date_alias && !date_time_conversions.contains(function->name)))
         return;
 
-    const Field argument = evaluateConstantExpression(function->arguments->children[0], context).first;
+    const auto [argument, argument_type] = evaluateConstantExpression(function->arguments->children[0], context);
     const auto [converted, type] = evaluateConstantExpression(ast, context);
-    checkDateTimeConversionArgument(argument, converted, type);
+    checkDateTimeConversionArgument(argument, argument_type, converted, type);
 }
 
 String MergeTreeData::getPartitionIDFromQuery(const ASTPtr & ast, ContextPtr local_context, const DataPartsLock * acquired_lock) const
