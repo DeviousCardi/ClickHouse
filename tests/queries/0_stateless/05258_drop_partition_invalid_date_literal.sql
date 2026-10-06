@@ -157,6 +157,9 @@ ALTER TABLE t_conversion DROP PARTITION tuple(toDate(concat('2024-02-', '30')));
 ALTER TABLE t_conversion DROP PARTITION CAST(tuple(toDate(concat('2024-02-', '30'))), 'Tuple(Date)'); -- { serverError INVALID_PARTITION_VALUE }
 ALTER TABLE t_conversion DROP PARTITION CAST(tuple('2024-02-30'), 'Tuple(Date)'); -- { serverError INVALID_PARTITION_VALUE }
 ALTER TABLE t_conversion DROP PARTITION tuple(toDate('2024-02-30 12:00:00')); -- { serverError INVALID_PARTITION_VALUE }
+-- `DATE` is `toDate` under a case-insensitive name.
+ALTER TABLE t_conversion DROP PARTITION tuple(DATE('2024-02-30')); -- { serverError INVALID_PARTITION_VALUE }
+ALTER TABLE t_conversion DROP PARTITION tuple(date('2024-02-30')); -- { serverError INVALID_PARTITION_VALUE }
 ALTER TABLE t_conversion_datetime64 DROP PARTITION tuple(toDateTime64('2024-02-29 24:00:00', 3, 'UTC')); -- { serverError INVALID_PARTITION_VALUE }
 ALTER TABLE t_conversion_datetime64 DROP PARTITION CAST('2024-03-01 00:00:00.0001', 'DateTime64(3, \'UTC\')'); -- { serverError INVALID_PARTITION_VALUE }
 SELECT 'conversion, nothing dropped', (SELECT groupArray(x) FROM t_conversion), (SELECT groupArray(x) FROM t_conversion_datetime64);
@@ -184,6 +187,8 @@ ALTER TABLE t_conversion_datetime DROP PARTITION tuple(toDateTime('2024-02-30 12
 ALTER TABLE t_conversion_datetime DROP PARTITION tuple(toDateTime('2024-02-30 12:00', 'UTC')); -- { serverError CANNOT_PARSE_DATETIME }
 ALTER TABLE t_conversion_datetime64 DROP PARTITION tuple(toDateTime64('2024-02-29 23:60:00+00:00', 3, 'UTC')); -- { serverError INVALID_PARTITION_VALUE }
 ALTER TABLE t_conversion_datetime64 DROP PARTITION tuple(toDateTime64('2024-03-01 00:00:00.0001Z', 3, 'UTC')); -- { serverError INVALID_PARTITION_VALUE }
+-- The offset is not checked by the reader either: `+00:60` is read as `+01:00`, so this used to name `2024-03-01 12:00:00`.
+ALTER TABLE t_conversion_datetime DROP PARTITION tuple(toDateTime('2024-03-01T13:00:00+00:60', 'UTC')); -- { serverError INVALID_PARTITION_VALUE }
 -- A spelling whose date and time cannot be taken apart is rejected rather than trusted.
 ALTER TABLE t_conversion_datetime DROP PARTITION tuple(toDateTime('2024-03-01 1:00:00', 'UTC')); -- { serverError INVALID_PARTITION_VALUE }
 SELECT 'conversion, rolled-over time, nothing dropped', (SELECT groupArray(x) FROM (SELECT x FROM t_conversion_datetime ORDER BY x)), (SELECT groupArray(x) FROM t_conversion_datetime64);

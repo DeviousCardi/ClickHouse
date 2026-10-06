@@ -172,6 +172,7 @@
 #include <Common/formatReadable.h>
 
 #include <boost/algorithm/string/join.hpp>
+#include <boost/algorithm/string/predicate.hpp>
 
 #include <base/hex.h>
 #include <base/insertAtEnd.h>
@@ -10382,6 +10383,9 @@ static std::optional<SpelledDateTime> splitSpelledDateTime(std::string_view text
                 ++pos;
             if ((has_colon || pos < text.size()) && !read_two_digits(offset_minutes))
                 return {};
+            /// The readers of the conversions do not check the offset either, so `+00:60` would be read as `+01:00`.
+            if (offset_hours > 23 || offset_minutes > 59)
+                return {};
             const Int64 offset = offset_hours * 3600 + offset_minutes * 60;
             spelled.utc_offset = negative ? -offset : offset;
         }
@@ -10535,7 +10539,10 @@ static void checkDateTimeConversionsInPartitionValue(const ASTPtr & ast, Context
 
     static const std::unordered_set<std::string_view> date_time_conversions
         = {"toDate", "toDate32", "toDateTime", "toDateTime32", "toDateTime64"};
-    if (function->arguments->children.empty() || (!isFunctionCast(function) && !date_time_conversions.contains(function->name)))
+    /// `DATE` is `toDate` registered under a case-insensitive name.
+    const bool is_date_alias = boost::iequals(function->name, "DATE");
+    if (function->arguments->children.empty()
+        || (!isFunctionCast(function) && !is_date_alias && !date_time_conversions.contains(function->name)))
         return;
 
     const Field argument = evaluateConstantExpression(function->arguments->children[0], context).first;
