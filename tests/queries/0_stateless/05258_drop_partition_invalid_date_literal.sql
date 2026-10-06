@@ -189,6 +189,8 @@ ALTER TABLE t_conversion_datetime64 DROP PARTITION tuple(toDateTime64('2024-02-2
 ALTER TABLE t_conversion_datetime64 DROP PARTITION tuple(toDateTime64('2024-03-01 00:00:00.0001Z', 3, 'UTC')); -- { serverError INVALID_PARTITION_VALUE }
 -- The offset is not checked by the reader either: `+00:60` is read as `+01:00`, so this used to name `2024-03-01 12:00:00`.
 ALTER TABLE t_conversion_datetime DROP PARTITION tuple(toDateTime('2024-03-01T13:00:00+00:60', 'UTC')); -- { serverError INVALID_PARTITION_VALUE }
+-- A local time skipped by a daylight saving time shift does not exist either.
+ALTER TABLE t_conversion_datetime DROP PARTITION tuple(toDateTime('2024-03-31 02:30:00', 'Europe/Berlin')); -- { serverError INVALID_PARTITION_VALUE }
 -- A spelling whose date and time cannot be taken apart is rejected rather than trusted.
 ALTER TABLE t_conversion_datetime DROP PARTITION tuple(toDateTime('2024-03-01 1:00:00', 'UTC')); -- { serverError INVALID_PARTITION_VALUE }
 SELECT 'conversion, rolled-over time, nothing dropped', (SELECT groupArray(x) FROM (SELECT x FROM t_conversion_datetime ORDER BY x)), (SELECT groupArray(x) FROM t_conversion_datetime64);
