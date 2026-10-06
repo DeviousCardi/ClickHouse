@@ -1,25 +1,19 @@
 -- https://github.com/ClickHouse/ClickHouse/issues/119578
--- toRelativeHourNum used a formula for t >= 0 (whole-hour-offset time zones) that was
--- inconsistent with the formula used for t < 0, producing a discontinuity (non-monotonicity)
--- right at the Unix epoch: e.g. for DateTime64(0, 'UTC'), 1969-12-31 23:30:00 mapped to 23 while
--- 1970-01-01 00:00:00 mapped to 0. Because the function is (incorrectly) declared always
--- monotonic, partition pruning and primary key range analysis silently dropped rows whose
--- range straddled the epoch.
+-- In a time zone with a whole-hour offset, `toRelativeHourNum` counts a time before the Unix epoch with a bias of a day,
+-- so `1969-12-31 23:00:00` UTC is 23 and `1970-01-01 00:00:00` is 0. The function used to be reported as always
+-- monotonic, so partition pruning and primary key analysis dropped rows of a range across the epoch. The values are
+-- stored in partition IDs and in primary keys of existing parts, so they are kept, and only the monotonicity is fixed.
 
-SELECT 'direct monotonicity sweep, UTC (whole-hour offset, fast path): must never decrease';
--- consecutive whole hours from 21:00 the day before the epoch to 02:00 the day after, straddling t = 0
-SELECT groupArray(toRelativeHourNum(dt)) AS arr, arr = arraySort(arr) AS never_decreases
-FROM (
-    SELECT toDateTime64('1969-12-31 21:00:00', 0, 'UTC') + INTERVAL number HOUR AS dt
-    FROM numbers(6)
-);
+SELECT 'values, UTC';
+SELECT groupArray(toRelativeHourNum(dt))
+FROM (SELECT toDateTime64('1969-12-31 21:00:00', 0, 'UTC') + INTERVAL number HOUR AS dt FROM numbers(6));
 
-SELECT 'direct monotonicity sweep, Asia/Kolkata (+05:30, sub-hour offset, calendar path): must never decrease';
-SELECT groupArray(toRelativeHourNum(dt)) AS arr, arr = arraySort(arr) AS never_decreases
-FROM (
-    SELECT toDateTime64('1969-12-31 21:00:00', 0, 'Asia/Kolkata') + INTERVAL number HOUR AS dt
-    FROM numbers(6)
-);
+SELECT 'values, Asia/Kolkata';
+SELECT groupArray(toRelativeHourNum(dt))
+FROM (SELECT toDateTime64('1969-12-31 21:00:00', 0, 'Asia/Kolkata') + INTERVAL number HOUR AS dt FROM numbers(6));
+
+SELECT 'values, Date32 in America/New_York';
+SELECT groupArray(toRelativeHourNum(d, 'America/New_York')) FROM (SELECT toDate32('1969-12-30') + number AS d FROM numbers(3));
 
 DROP TABLE IF EXISTS t_relative_hour_partition;
 CREATE TABLE t_relative_hour_partition (d DateTime64(0, 'UTC'))
@@ -31,14 +25,19 @@ INSERT INTO t_relative_hour_partition VALUES
     ('1969-12-31 21:00:00'), ('1969-12-31 22:00:00'), ('1969-12-31 23:00:00'),
     ('1970-01-01 02:00:00'), ('1970-01-05 00:00:00');
 
-SELECT 'partition pruning across the epoch: indexed count must match full-scan count';
+SELECT 'partition IDs';
+SELECT groupArray(partition) FROM (SELECT partition FROM system.parts WHERE database = currentDatabase() AND table = 't_relative_hour_partition' AND active ORDER BY partition);
+
+SELECT 'partition pruning across the epoch';
 SELECT
     (SELECT countIf(d >= toDateTime64('1969-12-31 21:00:00', 0, 'UTC') AND d <= toDateTime64('1970-01-01 02:00:00', 0, 'UTC'))
-     FROM t_relative_hour_partition SETTINGS force_primary_key = 0, force_index_by_date = 0) AS full_scan_count,
+     FROM t_relative_hour_partition) AS full_scan_count,
     (SELECT count() FROM t_relative_hour_partition
      WHERE d >= toDateTime64('1969-12-31 21:00:00', 0, 'UTC') AND d <= toDateTime64('1970-01-01 02:00:00', 0, 'UTC')
-     SETTINGS force_index_by_date = 1) AS indexed_count,
-    full_scan_count = indexed_count AS matches;
+     SETTINGS force_index_by_date = 1) AS indexed_count;
+SELECT
+    (SELECT countIf(toRelativeHourNum(d) = 23) FROM t_relative_hour_partition) AS full_scan_count,
+    (SELECT count() FROM t_relative_hour_partition WHERE toRelativeHourNum(d) = 23 SETTINGS force_index_by_date = 1) AS indexed_count;
 
 DROP TABLE t_relative_hour_partition;
 
@@ -51,19 +50,65 @@ INSERT INTO t_relative_hour_pk VALUES
     ('1969-12-31 20:00:00'), ('1969-12-31 21:00:00'), ('1969-12-31 23:00:00'),
     ('1970-01-01 01:30:00'), ('1970-01-01 05:00:00'), ('1970-01-01 07:00:00');
 
-SELECT 'PK range analysis across the epoch: indexed count must match full-scan count';
--- Pick predicates that still match rows after the fix, otherwise both arms are 0 and the check
--- passes even if key analysis prunes everything away. toRelativeHourNum clamps the three
--- pre-epoch rows to 0, and 1970-01-01 01:30:00 is the first row after the epoch, at 1.
--- force_primary_key asserts the range analysis is actually consulted rather than silently
--- falling back to a full scan that would produce the same (correct) answer.
+SELECT 'primary key analysis across the epoch';
 SELECT
-    (SELECT countIf(toRelativeHourNum(d) = 0) FROM t_relative_hour_pk SETTINGS force_primary_key = 0) AS full_scan_count,
-    (SELECT count() FROM t_relative_hour_pk WHERE toRelativeHourNum(d) = 0 SETTINGS force_primary_key = 1) AS indexed_count,
-    full_scan_count = indexed_count AS matches;
+    (SELECT countIf(toRelativeHourNum(d) = 23) FROM t_relative_hour_pk) AS full_scan_count,
+    (SELECT count() FROM t_relative_hour_pk WHERE toRelativeHourNum(d) = 23 SETTINGS force_primary_key = 1) AS indexed_count;
 SELECT
-    (SELECT countIf(toRelativeHourNum(d) = 1) FROM t_relative_hour_pk SETTINGS force_primary_key = 0) AS full_scan_count,
-    (SELECT count() FROM t_relative_hour_pk WHERE toRelativeHourNum(d) = 1 SETTINGS force_primary_key = 1) AS indexed_count,
-    full_scan_count = indexed_count AS matches;
+    (SELECT countIf(toRelativeHourNum(d) BETWEEN 1 AND 5) FROM t_relative_hour_pk) AS full_scan_count,
+    (SELECT count() FROM t_relative_hour_pk WHERE toRelativeHourNum(d) BETWEEN 1 AND 5 SETTINGS force_primary_key = 1) AS indexed_count;
 
 DROP TABLE t_relative_hour_pk;
+
+-- A sorting key of `toRelativeHourNum(d)`, with a condition on `d`.
+DROP TABLE IF EXISTS t_relative_hour_key;
+CREATE TABLE t_relative_hour_key (d DateTime64(0, 'UTC'))
+ENGINE = MergeTree ORDER BY toRelativeHourNum(d)
+SETTINGS index_granularity = 1;
+
+INSERT INTO t_relative_hour_key VALUES
+    ('1969-12-31 21:00:00'), ('1969-12-31 22:00:00'), ('1969-12-31 23:00:00'),
+    ('1970-01-01 02:00:00'), ('1970-01-05 00:00:00');
+
+SELECT 'sorting key analysis across the epoch';
+SELECT
+    (SELECT countIf(d >= toDateTime64('1969-12-31 22:00:00', 0, 'UTC') AND d <= toDateTime64('1970-01-01 02:00:00', 0, 'UTC'))
+     FROM t_relative_hour_key) AS full_scan_count,
+    (SELECT count() FROM t_relative_hour_key
+     WHERE d >= toDateTime64('1969-12-31 22:00:00', 0, 'UTC') AND d <= toDateTime64('1970-01-01 02:00:00', 0, 'UTC')) AS indexed_count;
+
+DROP TABLE t_relative_hour_key;
+
+-- `Date32` in a time zone west of UTC: `1969-12-31` is 10 and `1970-01-01` is 5 in `America/New_York`.
+DROP TABLE IF EXISTS t_relative_hour_date32;
+CREATE TABLE t_relative_hour_date32 (d Date32)
+ENGINE = MergeTree ORDER BY d
+SETTINGS index_granularity = 1;
+
+INSERT INTO t_relative_hour_date32 VALUES ('1969-12-30'), ('1969-12-31'), ('1970-01-01'), ('1970-01-02');
+
+SELECT 'Date32 primary key analysis across the epoch';
+SELECT groupArray(toRelativeHourNum(d)) FROM t_relative_hour_date32 SETTINGS session_timezone = 'America/New_York';
+SELECT
+    (SELECT countIf(toRelativeHourNum(d) = 10) FROM t_relative_hour_date32) AS full_scan_count,
+    (SELECT count() FROM t_relative_hour_date32 WHERE toRelativeHourNum(d) = 10 SETTINGS force_primary_key = 1) AS indexed_count
+SETTINGS session_timezone = 'America/New_York';
+
+DROP TABLE t_relative_hour_date32;
+
+-- `Date` in a time zone with an offset of more than 12 hours: `1970-01-01` wraps around to a large number.
+DROP TABLE IF EXISTS t_relative_hour_date;
+CREATE TABLE t_relative_hour_date (d Date)
+ENGINE = MergeTree ORDER BY d
+SETTINGS index_granularity = 1;
+
+INSERT INTO t_relative_hour_date VALUES ('1970-01-01'), ('1970-01-02'), ('1970-01-03');
+
+SELECT 'Date primary key analysis after 1970-01-01';
+SELECT groupArray(toRelativeHourNum(d)) FROM t_relative_hour_date SETTINGS session_timezone = 'Pacific/Tongatapu';
+SELECT
+    (SELECT countIf(toRelativeHourNum(d) = 11) FROM t_relative_hour_date) AS full_scan_count,
+    (SELECT count() FROM t_relative_hour_date WHERE toRelativeHourNum(d) = 11 SETTINGS force_primary_key = 1) AS indexed_count
+SETTINGS session_timezone = 'Pacific/Tongatapu';
+
+DROP TABLE t_relative_hour_date;

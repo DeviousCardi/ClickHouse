@@ -110,7 +110,11 @@ public:
 
     Monotonicity getMonotonicityForRange(const IDataType & type, const Field & left, const Field & right) const override
     {
-        if constexpr (std::is_same_v<typename Transform::FactorTransform, ZeroTransform>)
+        if constexpr (requires { Transform::is_monotonic_only_on_each_side_of_epoch; })
+        {
+            return getMonotonicityOnEachSideOfEpoch(type, left, right);
+        }
+        else if constexpr (std::is_same_v<typename Transform::FactorTransform, ZeroTransform>)
         {
             return { .is_monotonic = true, .is_always_monotonic = true };
         }
@@ -201,6 +205,46 @@ public:
         }
     }
 
+private:
+    /// For a transform that is monotonic before the Unix epoch and after it, but not across it: `toRelativeHourNum`
+    /// in a time zone with a whole-hour offset counts hours from the epoch for a time after it, and with a bias of a
+    /// day for a time before it, so `1969-12-31 23:00:00` UTC is `23` and `1970-01-01 00:00:00` is `0`. The values
+    /// are kept as they are, because they are stored in the partition IDs and the primary keys of existing parts.
+    ///
+    /// A `DateTime64` range is split at the epoch. A `Date32` range is split at `1970-01-01`: the midnight of that day
+    /// is before the epoch in a time zone east of UTC, but its value is still not greater than the one of `1970-01-02`.
+    /// A `Date` range is split after `1970-01-01`, because the value of that day is not clamped for `Date` and wraps
+    /// around in a time zone with an offset of more than 12 hours, such as `Pacific/Tongatapu`. A `DateTime` is never
+    /// before the epoch. A `NULL` bound of a range is an infinite one.
+    static Monotonicity getMonotonicityOnEachSideOfEpoch(const IDataType & type, const Field & left, const Field & right)
+    {
+        const IFunction::Monotonicity is_always_monotonic = { .is_monotonic = true, .is_always_monotonic = true };
+        const IFunction::Monotonicity is_monotonic = { .is_monotonic = true };
+        const IFunction::Monotonicity is_not_monotonic;
+
+        const auto * type_ptr = &type;
+        if (const auto * lc_type = checkAndGetDataType<DataTypeLowCardinality>(type_ptr))
+            type_ptr = lc_type->getDictionaryType().get();
+        if (const auto * nullable_type = checkAndGetDataType<DataTypeNullable>(type_ptr))
+            type_ptr = nullable_type->getNestedType().get();
+
+        /// A negative `DateTime64` is before the epoch whatever its scale is.
+        bool (*is_before_epoch)(const Field &) = nullptr;
+        if (checkAndGetDataType<DataTypeDateTime64>(type_ptr))
+            is_before_epoch = [](const Field & value) { return value.safeGet<DateTime64>().getValue().value < 0; };
+        else if (checkAndGetDataType<DataTypeDate32>(type_ptr))
+            is_before_epoch = [](const Field & value) { return value.safeGet<Int64>() < 0; };
+        else if (checkAndGetDataType<DataTypeDate>(type_ptr))
+            is_before_epoch = [](const Field & value) { return value.safeGet<UInt64>() == 0; };
+        else
+            return is_always_monotonic;
+
+        const bool left_is_before_epoch = left.isNull() ? !left.isPositiveInfinity() : is_before_epoch(left);
+        const bool right_is_before_epoch = right.isNull() ? right.isNegativeInfinity() : is_before_epoch(right);
+        return left_is_before_epoch == right_is_before_epoch ? is_monotonic : is_not_monotonic;
+    }
+
+public:
     bool hasInformationAboutPreimage() const override
     {
         if constexpr (requires { Transform::hasPreimage(); })
