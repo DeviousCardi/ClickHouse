@@ -60,6 +60,22 @@ SELECT
 
 DROP TABLE t_relative_hour_pk;
 
+-- A negative `DateTime64` with a fraction is rounded down to a second before the epoch, so it is on the same side.
+DROP TABLE IF EXISTS t_relative_hour_pk_ms;
+CREATE TABLE t_relative_hour_pk_ms (d DateTime64(3, 'UTC'))
+ENGINE = MergeTree ORDER BY d
+SETTINGS index_granularity = 1;
+
+INSERT INTO t_relative_hour_pk_ms VALUES ('1969-12-31 23:59:59.000'), ('1969-12-31 23:59:59.999'), ('1970-01-01 00:00:00.000');
+
+SELECT 'DateTime64(3) primary key analysis across the epoch';
+SELECT groupArray(toRelativeHourNum(d)) FROM (SELECT d FROM t_relative_hour_pk_ms ORDER BY d);
+SELECT
+    (SELECT countIf(toRelativeHourNum(d) = 23) FROM t_relative_hour_pk_ms) AS full_scan_count,
+    (SELECT count() FROM t_relative_hour_pk_ms WHERE toRelativeHourNum(d) = 23 SETTINGS force_primary_key = 1) AS indexed_count;
+
+DROP TABLE t_relative_hour_pk_ms;
+
 -- A sorting key of `toRelativeHourNum(d)`, with a condition on `d`.
 DROP TABLE IF EXISTS t_relative_hour_key;
 CREATE TABLE t_relative_hour_key (d DateTime64(0, 'UTC'))

@@ -12,6 +12,9 @@ partition pruning across the epoch
 primary key analysis across the epoch
 1	1
 2	2
+DateTime64(3) primary key analysis across the epoch
+[23,23,0]
+2	2
 sorting key analysis across the epoch
 3	3
 Date32 primary key analysis across the epoch
