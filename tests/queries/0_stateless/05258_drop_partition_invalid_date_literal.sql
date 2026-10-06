@@ -170,5 +170,27 @@ ALTER TABLE t_conversion DROP PARTITION tuple(toDate('2024-02-29 12:00:00'));
 ALTER TABLE t_conversion DROP PARTITION CAST('2024-02-28 12:00:00' AS Date);
 ALTER TABLE t_conversion_datetime64 DROP PARTITION tuple(toDateTime64('2024-03-01 00:00:00Z', 3, 'UTC'));
 SELECT 'conversion, other spellings', (SELECT groupArray(x) FROM t_conversion), (SELECT groupArray(x) FROM t_conversion_datetime64);
+-- A conversion to `DateTime` reads such spellings with the reader of `cast_string_to_date_time_mode`, which rolls a time
+-- of day over, so they are checked too: `toDateTime('2024-02-29 25:00', 'UTC')` used to name `2024-03-01 01:00:00`.
+DROP TABLE IF EXISTS t_conversion_datetime;
+CREATE TABLE t_conversion_datetime (d DateTime('UTC'), x UInt8) ENGINE = MergeTree PARTITION BY d ORDER BY x;
+INSERT INTO t_conversion_datetime VALUES ('2024-03-01 00:00:00', 1), ('2024-03-01 01:00:00', 2), ('2024-03-01 12:00:00', 3);
+INSERT INTO t_conversion_datetime64 VALUES ('2024-03-01 00:00:00', 1);
+ALTER TABLE t_conversion_datetime DROP PARTITION tuple(toDateTime('2024-02-29 25:00', 'UTC')); -- { serverError INVALID_PARTITION_VALUE }
+ALTER TABLE t_conversion_datetime DROP PARTITION tuple(toDateTime('2024-02-29 24:00:00Z', 'UTC')); -- { serverError INVALID_PARTITION_VALUE }
+ALTER TABLE t_conversion_datetime DROP PARTITION CAST('2024-02-29 23:59:60 UTC' AS DateTime('UTC')); -- { serverError INVALID_PARTITION_VALUE }
+ALTER TABLE t_conversion_datetime DROP PARTITION tuple(toDateTime('2024-02-29 25:00:00', 'UTC')) SETTINGS cast_string_to_date_time_mode = 'best_effort_us'; -- { serverError INVALID_PARTITION_VALUE }
+ALTER TABLE t_conversion_datetime DROP PARTITION tuple(toDateTime('2024-02-30 12:00:00', 'UTC')) SETTINGS cast_string_to_date_time_mode = 'basic'; -- { serverError INVALID_PARTITION_VALUE }
+ALTER TABLE t_conversion_datetime DROP PARTITION tuple(toDateTime('2024-02-30 12:00', 'UTC')); -- { serverError CANNOT_PARSE_DATETIME }
+ALTER TABLE t_conversion_datetime64 DROP PARTITION tuple(toDateTime64('2024-02-29 23:60:00+00:00', 3, 'UTC')); -- { serverError INVALID_PARTITION_VALUE }
+ALTER TABLE t_conversion_datetime64 DROP PARTITION tuple(toDateTime64('2024-03-01 00:00:00.0001Z', 3, 'UTC')); -- { serverError INVALID_PARTITION_VALUE }
+-- A spelling whose date and time cannot be taken apart is rejected rather than trusted.
+ALTER TABLE t_conversion_datetime DROP PARTITION tuple(toDateTime('2024-03-01 1:00:00', 'UTC')); -- { serverError INVALID_PARTITION_VALUE }
+SELECT 'conversion, rolled-over time, nothing dropped', (SELECT groupArray(x) FROM (SELECT x FROM t_conversion_datetime ORDER BY x)), (SELECT groupArray(x) FROM t_conversion_datetime64);
+ALTER TABLE t_conversion_datetime DROP PARTITION tuple(toDateTime('2024-03-01 01:00', 'UTC'));
+ALTER TABLE t_conversion_datetime DROP PARTITION tuple(toDateTime('2024-03-01T13:00:00+01:00', 'UTC'));
+ALTER TABLE t_conversion_datetime64 DROP PARTITION tuple(toDateTime64('2024-03-01 00:00:00.000Z', 3, 'UTC'));
+SELECT 'conversion, valid time spellings', (SELECT groupArray(x) FROM (SELECT x FROM t_conversion_datetime ORDER BY x)), (SELECT groupArray(x) FROM t_conversion_datetime64);
 DROP TABLE t_conversion;
+DROP TABLE t_conversion_datetime;
 DROP TABLE t_conversion_datetime64;
