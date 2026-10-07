@@ -17,6 +17,9 @@ DateTime64(3) primary key analysis across the epoch
 2	2
 sorting key analysis across the epoch
 3	3
+sorting key analysis across the epoch, Asia/Kolkata
+[15,16,18,20,109]
+3	3
 Date32 primary key analysis across the epoch
 [0,10,5,29]
 1	1
